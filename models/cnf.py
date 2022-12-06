@@ -61,12 +61,12 @@ class CNF(nn.Module):
         if self.conditional:
             assert context is not None
             states = (x, _logpx, context)
-            atol = [self.atol] * 3
-            rtol = [self.rtol] * 3
+            atol = self.atol #atol = [self.atol] * 3
+            rtol = self.rtol #rtol = [self.rtol] * 3
         else:
             states = (x, _logpx)
-            atol = [self.atol] * 2
-            rtol = [self.rtol] * 2
+            atol = self.atol #atol = [self.atol] * 2
+            rtol = self.rtol #rtol = [self.rtol] * 2
 
         if integration_times is None:
             if self.train_T:
@@ -101,6 +101,8 @@ class CNF(nn.Module):
                 rtol=self.test_rtol,
                 method=self.test_solver,
             )
+
+        print("state_t dim is ", state_t.size(-1))
 
         if len(integration_times) == 2:
             state_t = tuple(s[1] for s in state_t)

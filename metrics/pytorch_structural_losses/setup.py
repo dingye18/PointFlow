@@ -11,7 +11,7 @@ setup(
     ext_modules=[
         CUDAExtension(
             name='StructuralLossesBackend',
-            include_dirs=['./'],
+            include_dirs=['./', "/home/dingye/Documents/Github/PointFlow/metrics/pytorch_structural_losses"],
             sources=[
                 'pybind/bind.cpp',
             ],
