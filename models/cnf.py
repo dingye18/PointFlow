@@ -102,8 +102,6 @@ class CNF(nn.Module):
                 method=self.test_solver,
             )
 
-        print("state_t dim is ", state_t.size(-1))
-
         if len(integration_times) == 2:
             state_t = tuple(s[1] for s in state_t)
 

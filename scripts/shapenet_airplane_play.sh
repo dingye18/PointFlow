@@ -33,7 +33,8 @@ python train.py \
     --use_deterministic_encoder \
     --prior_weight 1 \
     --entropy_weight 1 \
-    --use_latent_flow
+    --use_latent_flow \
+    --random_rotate
 
 echo "Done"
 exit 0

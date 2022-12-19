@@ -3,6 +3,8 @@ import numpy as np
 import torch.nn.functional as F
 from torch import optim
 from torch import nn
+import dgl
+from dgl import function as fn
 from models.flow import get_point_cnf
 from models.flow import get_latent_cnf
 from utils import truncated_normal, reduce_tensor, standard_normal_logprob
@@ -44,7 +46,9 @@ class Encoder(nn.Module):
             self.fc_bn2_v = nn.BatchNorm1d(128)
 
     def forward(self, x):
+        print(x.shape)
         x = x.transpose(1, 2)
+        print(x.shape)
         x = F.relu(self.bn1(self.conv1(x)))
         x = F.relu(self.bn2(self.conv2(x)))
         x = F.relu(self.bn3(self.conv3(x)))
@@ -67,7 +71,141 @@ class Encoder(nn.Module):
 
         return m, v
 
+class AtomEncoder(torch.nn.Module):
+    def __init__(self, emb_dim, feature_dims, use_scalar_feat=True, n_feats_to_use=None):
+        # first element of feature_dims tuple is a list with the length of each categorical feature and the second is the number of scalar features
+        super(AtomEncoder, self).__init__()
+        self.use_scalar_feat = use_scalar_feat
+        self.n_feats_to_use = n_feats_to_use
+        self.atom_embedding_list = torch.nn.ModuleList()
+        self.num_categorical_features = len(feature_dims[0])
+        self.num_scalar_features = feature_dims[1]
+        for i, dim in enumerate(feature_dims[0]):
+            emb = torch.nn.Embedding(dim, emb_dim)
+            torch.nn.init.xavier_uniform_(emb.weight.data)
+            self.atom_embedding_list.append(emb)
+            if i + 1 == self.n_feats_to_use:
+                break
 
+        if self.num_scalar_features > 0:
+            self.linear = torch.nn.Linear(self.num_scalar_features, emb_dim)
+
+    def forward(self, x):
+        x_embedding = 0
+        assert x.shape[1] == self.num_categorical_features + self.num_scalar_features
+        for i in range(self.num_categorical_features):
+            x_embedding += self.atom_embedding_list[i](x[:, i].long())
+            if i + 1 == self.n_feats_to_use:
+                break
+
+        if self.num_scalar_features > 0 and self.use_scalar_feat:
+            x_embedding += self.linear(x[:, self.num_categorical_features:])
+        #if torch.isnan(x_embedding).any():
+        #    log('nan')
+        return x_embedding
+
+class GraphEncoder(nn.Module):
+    def __init__(self, zdim, input_node_features_dim, input_edge_features_dim, hidden_dim, input_coords_dim=3, embedding_dim = 64, negative_slope = 1e-2, use_dist_in_layers = True, use_deterministic_encoder=False):
+        super(GraphEncoder, self).__init__()
+        self.use_deterministic_encoder = use_deterministic_encoder
+        self.use_dist_in_layers = use_dist_in_layers
+        self.num_layers = 1
+        
+        self.all_sigmas_dist = [1.5 ** x for x in range(10)]
+        # Manually set the number of attention heads to 1
+        self.num_att_heads = 1
+        
+        self.lig_atom_embedding = AtomEncoder(emb_dim=embedding_dim, feature_dims = input_node_features_dim, use_scalar_feat=False, n_feats_to_use=None)
+        
+        if self.use_dist_in_layers:
+            input_edge_features_dim4edge_mlp = input_edge_features_dim + 2 * input_node_features_dim + len(self.all_sigmas_dist)
+        else:
+            input_edge_features_dim4edge_mlp = input_edge_features_dim + 2 * input_node_features_dim
+            
+        self.lig_edge_mlp = nn.Sequential(
+                nn.Linear(input_edge_features_dim4edge_mlp, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.LeakyReLU(negative_slope=negative_slope),
+                nn.Dropout(0.1),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+            )
+    
+        self.node_mlp_lig = nn.Sequential(
+            nn.Linear(embedding_dim + hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+            nn.LeakyReLU(negative_slope=negative_slope),
+            nn.Dropout(0.1),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
+        )
+        
+        self.mu_layer = nn.Sequential(
+            nn.Linear(hidden_dim * input_coords_dim, zdim),
+            nn.BatchNorm1d(zdim),
+            nn.Relu(),
+        )
+        
+        self.sigma_layer = nn.Sequential(
+            nn.Linear(hidden_dim * input_coords_dim, zdim),
+            nn.BatchNorm1d(zdim),
+            nn.Relu(),
+        )
+            
+    def apply_edges_lig(self, edges):
+        if self.use_dist_in_layers:
+            x_rel_mag = edges.data['x_rel'] ** 2
+            x_rel_mag = torch.sum(x_rel_mag, dim=1, keepdim=True)
+            x_rel_mag = torch.cat([torch.exp(-x_rel_mag / sigma) for sigma in self.all_sigmas_dist], dim=-1)
+            return {'msg': self.lig_edge_mlp(torch.cat([edges.src['feat'], edges.dst['feat'], edges.data['feat'], x_rel_mag], dim=1))}
+            
+
+    def forward(self, lig_graph: dgl.graph):
+        coords_lig = lig_graph.ndata['x']
+        h_feats_lig = self.lig_atom_embedding(lig_graph.ndata['feat'])
+        
+        h_feats_lig = torch.cat([h_feats_lig, torch.log(lig_graph.ndata['mu_r_norm'])], dim=1)
+        
+        original_ligand_node_feats = h_feats_lig
+        for ii in range(self.num_layers):
+            with lig_graph.local_scope():
+                lig_graph.ndata['feat'] = h_feats_lig
+                if self.use_dist_in_layers:
+                    lig_graph.apply_edges(fn.u_sub_v('x', 'x', 'x_rel'))
+                lig_graph.apply_edges(self.apply_edges_lig)
+                lig_graph.update_all(fn.copy_edge('msg','m'), fn.mean('m', 'aggr_msg'))
+                
+                input_node_update_ligand = torch.cat([lig_graph.ndata['feat'], lig_graph.ndata['aggr_msg']], dim=-1)
+                
+                node_update_ligand = self.node_mlp_lig(input_node_update_ligand)
+                h_feats_lig = node_update_ligand
+        
+        ligs_node_idx = torch.cumsum(lig_graph.batch_num_nodes(), dim=0).tolist()
+        ligs_node_idx.insert(0, 0)
+        
+        mu_batch = torch.zeros((len(ligs_node_idx) - 1, self.zdim), device = self.device)
+        sigma_batch = torch.zeros((len(ligs_node_idx) - 1, self.zdim), device = self.device)
+        
+        for idx in range(len(ligs_node_idx) - 1):
+            lig_start = ligs_node_idx[idx]
+            lig_end = ligs_node_idx[idx + 1]
+            
+            lig_feats = h_feats_lig[lig_start:lig_end]
+            lig_coords = coords_lig[lig_start:lig_end]
+            
+            # d is the dime of feats
+            #d = lig_feats.shape[1]
+            #n = lig_feats.shape[0]
+            
+            #atention = (self.query_lig(lig_feats).view(-1, self.num_att_heads, -1).transpose(0, 1).transpose(1, 2) @ self.key_lig(lig_coords).view(-1, self.num_att_heads, -1).transpose(0, 1)) / np.sqrt(n)
+            lig_info = lig_feats.transpose(0, 1) @ lig_coords
+            lig_info = torch.flatten(lig_info, start_dim=1)
+            
+            mu_batch[idx] = self.mu_layer(lig_info)
+            sigma_batch[idx] = self.sigma_layer(lig_info)
+
+        return mu_batch, sigma_batch
+    
 # Model
 class PointFlow(nn.Module):
     def __init__(self, args):

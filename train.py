@@ -170,6 +170,8 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             step = bidx + len(train_loader) * epoch
             model.train()
             if args.random_rotate:
+                print("Random rotation is used for now")
+                print("Axis ",train_loader.dataset.gravity_axis)
                 tr_batch, _, _ = apply_random_rotation(
                     tr_batch, rot_axis=train_loader.dataset.gravity_axis)
             inputs = tr_batch.cuda(args.gpu, non_blocking=True)
