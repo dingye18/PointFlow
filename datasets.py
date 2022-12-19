@@ -4,6 +4,8 @@ import numpy as np
 from torch.utils.data import Dataset
 from torch.utils import data
 import random
+from copy import deepcopy, copy
+import dgl
 
 # taken from https://github.com/optas/latent_3d_points/blob/8e8f29f8124ed5fc59439e8551ba7ef7567c9a37/src/in_out.py
 synsetid_to_cate = {
@@ -345,6 +347,17 @@ def get_datasets(args):
         tr_dataset, te_dataset = _get_MN40_datasets_(args)
     elif args.dataset_type == 'modelnet10_15k':
         tr_dataset, te_dataset = _get_MN10_datasets_(args)
+    elif args.dataset_type == "BioLipPocketPointCloud":
+        tr_dataset = PocketPointCloudReconstruction(device=args.gpu, 
+                                                    processed_data_dir="data/processed_biolip_data/train",
+                                                    complex_names_file=None,
+                                                    mol_dir=None,
+                                                    pocket_dir=None)
+        te_dataset = PocketPointCloudReconstruction(device=args.gpu, 
+                                                    processed_data_dir="data/processed_biolip_data/val",
+                                                    complex_names_file=None,
+                                                    mol_dir=None,
+                                                    pocket_dir=None)
     else:
         raise Exception("Invalid dataset type:%s" % args.dataset_type)
 
@@ -379,6 +392,109 @@ def get_data_loaders(args):
         'train_unshuffle_loader': train_unshuffle_loader,
     }
     return loaders
+
+
+def write_strings_to_txt(strings: list, path):
+    # every string of the list will be saved in one line
+    textfile = open(path, "w")
+    for element in strings:
+        textfile.write(element + "\n")
+    textfile.close()
+
+def read_strings_from_txt(path):
+    # every line will be one element of the returned list
+    with open(path) as file:
+        lines = file.readlines()
+        return [line.rstrip() for line in lines]
+
+class PocketPointCloudReconstruction(Dataset):
+    def __init__(self, device, 
+                 processed_data_dir, 
+                 complex_names_file, 
+                 mol_dir, 
+                 pocket_dir, 
+                 prefix = None,
+                 ignore_hydrogen = True, 
+                 num_points = 7680, # 64 * 120
+                 scale_vdw_radius = 1.5, 
+                 element_dict = {'C': 0, 'N': 1, 'O': 2, 'S': 3, "P": 4},
+                 convert_point_cloud2graph = False, 
+                 random_rotation = False,
+                 point_cloud_resampling = False,):
+        super(PocketPointCloudReconstruction, self).__init__()
+        """Constructor for PocketPointCloudReconstruction dataset.
+        """
+        self.device = device # cpu or gpu
+        self.processed_dataset_dir = processed_data_dir # Used for output dir
+        if prefix is not None:
+            self.processed_dataset_dir = os.path.join(self.processed_dataset_dir, prefix)
+        #self.complex_names_file = complex_names_file # List of complex names, only the names in this list will be processed
+        #self.mol_dir = mol_dir # Path to the directory containing the mol2 files
+        #self.pocket_dir = pocket_dir # Path to the directory containing the pocket files
+        self.ignore_hydrogen = ignore_hydrogen # Whether to ignore hydrogen atoms
+        self.num_points = num_points # Num of points in sampling for a pocket totally.
+        self.scale_vdw_radius = scale_vdw_radius # Define the radius of the sphere for spherical sampling. The sphere radius is defined as scale_vdw_radius * vdw_radius]
+        self.element_dict = element_dict # A dictionary containing the element name and its corresponding index. If None, the element_dict in generate_point_cloud will be used. {"C":0, "N":1, "O":2, "S":3, "P":4, "F":5, "Cl":6, "Br":7, "I":8}
+        self.dim_features = len(element_dict.keys()) # Features dimension. If None, the features dimension will be the number of element.
+        self.convert_point_cloud2graph = convert_point_cloud2graph # Whether to convert the point cloud to graph.
+        
+        # Define the saved file names
+        self.path2lig_graphs_pt = os.path.join(self.processed_dataset_dir, 'lig_graphs.pt')
+        self.path2pocket_point_clouds_pt = os.path.join(self.processed_dataset_dir, 'pocket_point_clouds.pt')
+        self.path2pocket_coords_pt = os.path.join(self.processed_dataset_dir, 'pocket_coords.pt')
+        self.path2valid_complex_names = os.path.join(self.processed_dataset_dir, 'valid_complex_names.txt')
+        
+        # Load complex names from the file        
+        self.complex_names = None
+
+        self.lig_graphs = None
+        self.pocket_point_clouds = None
+        self.pocket_coords = None
+        self.valid_complex_names = []
+        
+        if not os.path.exists(self.processed_dataset_dir):
+            os.makedirs(self.processed_dataset_dir)
+            self.process()
+        else:
+            if not os.path.exists(self.path2lig_graphs_pt):
+                self.process()
+            if not os.path.exists(self.path2pocket_point_clouds_pt):
+                self.process()
+            if not os.path.exists(self.path2pocket_coords_pt):
+                self.process()
+            if not os.path.exists(self.path2valid_complex_names):
+                self.process()
+                
+        # TODO Implement the support for point cloud resampling.
+                
+        temp = torch.load(self.path2pocket_coords_pt)
+        self.pockets_coords = temp['pockets_coords']
+        
+        temp = torch.load(self.path2pocket_point_clouds_pt)
+        self.pocket_point_clouds_coords = temp['pocket_point_clouds_coords']
+        self.pocket_point_clouds_feats = temp['pocket_point_clouds_feats']
+        
+        temp, _  = dgl.load_graphs(self.path2lig_graphs_pt)
+        self.lig_graphs = temp
+        
+        self.valid_complex_names = read_strings_from_txt(self.path2valid_complex_names)
+        
+    
+        # Stack all of the data into a single tensor.
+        self.pocket_point_clouds_coords = torch.stack(self.pocket_point_clouds_coords, dim=0)
+    
+    def __len__(self):
+        return len(self.lig_graphs)
+    
+    def __getitem__(self, index):
+        pocket_coords = self.pockets_coords[index]
+        lig_graph = deepcopy(self.lig_graphs[index])
+        lig_coords = lig_graph.ndata['x']
+        point_clouds = self.pocket_point_clouds_coords[index]
+        
+        complex_name = self.valid_complex_names[index]
+        return point_clouds.to(self.device), pocket_coords, lig_graph.to(self.device), lig_coords.to(self.device), complex_name
+    
 
 
 if __name__ == "__main__":

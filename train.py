@@ -18,6 +18,7 @@ from torch.backends import cudnn
 from utils import AverageValueMeter, set_random_seed, apply_random_rotation, save, resume, visualize_point_clouds
 from tensorboardX import SummaryWriter
 from datasets import get_datasets, init_np_seed
+import dgl
 
 faulthandler.enable()
 
@@ -166,16 +167,19 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
 
         # train for one epoch
         for bidx, data in enumerate(train_loader):
-            idx_batch, tr_batch, te_batch = data['idx'], data['train_points'], data['test_points']
+            #idx_batch, tr_batch, te_batch = data['idx'], data['train_points'], data['test_points']
+            pocket_clouds, pocket_coords, lig_graphs, lig_coords, complex_name = tuple(data)
+            
             step = bidx + len(train_loader) * epoch
             model.train()
-            if args.random_rotate:
-                print("Random rotation is used for now")
-                print("Axis ",train_loader.dataset.gravity_axis)
-                tr_batch, _, _ = apply_random_rotation(
-                    tr_batch, rot_axis=train_loader.dataset.gravity_axis)
-            inputs = tr_batch.cuda(args.gpu, non_blocking=True)
-            out = model(inputs, optimizer, step, writer)
+            #if args.random_rotate:
+            #    print("Random rotation is used for now")
+            #    print("Axis ",train_loader.dataset.gravity_axis)
+            #    tr_batch, _, _ = apply_random_rotation(
+            #        tr_batch, rot_axis=train_loader.dataset.gravity_axis)
+            inputs = pocket_clouds.cuda(args.gpu, non_blocking=True)
+            lig_graphs = lig_graphs.cuda(args.gpu, non_blocking=True)
+            out = model(inputs, lig_graphs, optimizer, step, writer)
             entropy, prior_nats, recon_nats = out['entropy'], out['prior_nats'], out['recon_nats']
             entropy_avg_meter.update(entropy)
             point_nats_avg_meter.update(recon_nats)
@@ -196,7 +200,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
         if (epoch + 1) % args.viz_freq == 0:
             # reconstructions
             model.eval()
-            samples = model.reconstruct(inputs)
+            samples = model.reconstruct(inputs, lig_graphs)
             results = []
             for idx in range(min(10, inputs.size(0))):
                 res = visualize_point_clouds(samples[idx], inputs[idx], idx,

@@ -219,9 +219,17 @@ class PointFlow(nn.Module):
         self.entropy_weight = args.entropy_weight
         self.distributed = args.distributed
         self.truncate_std = None
-        self.encoder = Encoder(
-                zdim=args.zdim, input_dim=args.input_dim,
-                use_deterministic_encoder=args.use_deterministic_encoder)
+        #self.encoder = Encoder(
+        #        zdim=args.zdim, input_dim=args.input_dim,
+        #        use_deterministic_encoder=args.use_deterministic_encoder)
+        self.encoder = GraphEncoder(zdim=args.zdim, 
+                                    input_node_features_dim=args.input_node_features_dim, 
+                                    input_edge_features_dim=args.input_edge_features_dim, 
+                                    hidden_dim=args.hidden_dim,
+                                    input_coords_dim=args.input_coords_dim,
+                                    use_dist_in_layers=args.use_dist_in_layers,
+                                    device=args.gpu)
+        
         self.point_cnf = get_point_cnf(args)
         self.latent_cnf = get_latent_cnf(args) if args.use_latent_flow else nn.Sequential()
 
@@ -264,11 +272,11 @@ class PointFlow(nn.Module):
                         + list(list(self.latent_cnf.parameters())))
         return opt
 
-    def forward(self, x, opt, step, writer=None):
+    def forward(self, x, lig_graphs, opt, step, writer=None):
         opt.zero_grad()
         batch_size = x.size(0)
         num_points = x.size(1)
-        z_mu, z_sigma = self.encoder(x)
+        z_mu, z_sigma = self.encoder(lig_graphs)
         if self.use_deterministic_encoder:
             z = z_mu + 0 * z_sigma
         else:
@@ -332,8 +340,8 @@ class PointFlow(nn.Module):
             'recon_nats': recon_nats,
         }
 
-    def encode(self, x):
-        z_mu, z_sigma = self.encoder(x)
+    def encode(self, lig_graphs):
+        z_mu, z_sigma = self.encoder(lig_graphs)
         if self.use_deterministic_encoder:
             return z_mu
         else:
@@ -355,8 +363,8 @@ class PointFlow(nn.Module):
         x = self.point_cnf(y, z, reverse=True).view(*y.size())
         return z, x
 
-    def reconstruct(self, x, num_points=None, truncate_std=None):
+    def reconstruct(self, x, lig_graphs, num_points=None, truncate_std=None):
         num_points = x.size(1) if num_points is None else num_points
-        z = self.encode(x)
+        z = self.encode(lig_graphs)
         _, x = self.decode(z, num_points, truncate_std)
         return x

@@ -34,6 +34,19 @@ def add_args(parser):
                         help='Whether to use a deterministic encoder.')
     parser.add_argument('--zdim', type=int, default=128,
                         help='Dimension of the shape code')
+    
+    # options for Graph Encoder
+    parser.add_argument('--input_node_features_dim', type=int, default=18,
+                        help="Node feature dimension of the input graph")
+    parser.add_argument('--input_edge_features_dim', type=int, default=0,
+                        help="Edge feature dimension of the input graph")
+    parser.add_argument('--hidden_dim', type=int, default=128,
+                        help="Hidden dimension of the graph encoder")
+    parser.add_argument('--input_coords_dim', type=int, default=3,
+                        help="Input dimension of the coordinates")
+    parser.add_argument('--use_dist_in_layers', action='store_true',
+                        help="Where to use the distance in the graph encoder")
+    
     parser.add_argument('--optimizer', type=str, default='adam',
                         help='Optimizer to use', choices=['adam', 'adamax', 'sgd'])
     parser.add_argument('--batch_size', type=int, default=50,
@@ -67,7 +80,7 @@ def add_args(parser):
 
     # data options
     parser.add_argument('--dataset_type', type=str, default="shapenet15k",
-                        help="Dataset types.", choices=['shapenet15k', 'modelnet40_15k', 'modelnet10_15k'])
+                        help="Dataset types.", choices=['shapenet15k', 'modelnet40_15k', 'modelnet10_15k', "BioLipPocketPointCloud"])
     parser.add_argument('--cates', type=str, nargs='+', default=["airplane"],
                         help="Categories to be trained (useful only if 'shapenet' is selected)")
     parser.add_argument('--data_dir', type=str, default="data/ShapeNetCore.v2.PC15k",
