@@ -465,6 +465,9 @@ class PocketPointCloudReconstruction(Dataset):
         self.pocket_coords = None
         self.valid_complex_names = []
         
+        self.gravity_axis = 1
+        self.display_axis_order = [0, 2, 1]
+        
         if not os.path.exists(self.processed_dataset_dir):
             os.makedirs(self.processed_dataset_dir)
             self.process()
