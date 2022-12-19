@@ -6,6 +6,7 @@ from torch.utils import data
 import random
 from copy import deepcopy, copy
 import dgl
+from utils import apply_random_rotation
 
 # taken from https://github.com/optas/latent_3d_points/blob/8e8f29f8124ed5fc59439e8551ba7ef7567c9a37/src/in_out.py
 synsetid_to_cate = {
@@ -370,6 +371,18 @@ def get_clf_datasets(args):
         'MN10': _get_MN10_datasets_(args, data_dir=args.mn10_data_dir),
     }
 
+def graph_collate_revised4inverse_pocket(batch):
+    random_rotation = True
+    point_clouds, pockets_coords, lig_graphs, ligs_coords, complex_names = map(list, zip(*batch))
+    point_clouds = torch.stack(point_clouds, dim=0)
+    
+    if random_rotation:
+        point_clouds[:, :, :3], rot, theta = apply_random_rotation(point_clouds[:, :, :3], rot_axis=1)
+        num_ligs = len(lig_graphs)
+        for ii in range(num_ligs):
+            lig_graphs[ii].ndata['x'] = torch.mm(lig_graphs[ii].ndata['x'], rot[ii])
+    
+    return point_clouds, pockets_coords, dgl.batch(lig_graphs), ligs_coords, complex_names
 
 def get_data_loaders(args):
     tr_dataset, te_dataset = get_datasets(args)

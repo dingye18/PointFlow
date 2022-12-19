@@ -17,7 +17,7 @@ from args import get_args
 from torch.backends import cudnn
 from utils import AverageValueMeter, set_random_seed, apply_random_rotation, save, resume, visualize_point_clouds
 from tensorboardX import SummaryWriter
-from datasets import get_datasets, init_np_seed
+from datasets import get_datasets, init_np_seed, graph_collate_revised4inverse_pocket
 import dgl
 
 faulthandler.enable()
@@ -98,15 +98,18 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
         train_sampler = None
 
     train_loader = torch.utils.data.DataLoader(
-        dataset=tr_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+        dataset=tr_dataset, batch_size=args.batch_size, 
+        collate_fn=graph_collate_revised4inverse_pocket, shuffle=(train_sampler is None),
         num_workers=0, pin_memory=True, sampler=train_sampler, drop_last=True,
         worker_init_fn=init_np_seed)
     test_loader = torch.utils.data.DataLoader(
-        dataset=te_dataset, batch_size=args.batch_size, shuffle=False,
+        dataset=te_dataset, batch_size=args.batch_size, 
+        collate_fn=graph_collate_revised4inverse_pocket, shuffle=False,
         num_workers=0, pin_memory=True, drop_last=False,
         worker_init_fn=init_np_seed)
 
     # save dataset statistics
+    '''
     if not args.distributed or (args.rank % ngpus_per_node == 0):
         np.save(os.path.join(save_dir, "train_set_mean.npy"), tr_dataset.all_points_mean)
         np.save(os.path.join(save_dir, "train_set_std.npy"), tr_dataset.all_points_std)
@@ -114,7 +117,8 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
         np.save(os.path.join(save_dir, "val_set_mean.npy"), te_dataset.all_points_mean)
         np.save(os.path.join(save_dir, "val_set_std.npy"), te_dataset.all_points_std)
         np.save(os.path.join(save_dir, "val_set_idx.npy"), np.array(te_dataset.shuffle_idx))
-
+    '''
+    
     # load classification dataset if needed
     if args.eval_classification:
         from datasets import get_clf_datasets
@@ -178,7 +182,7 @@ def main_worker(gpu, save_dir, ngpus_per_node, args):
             #    tr_batch, _, _ = apply_random_rotation(
             #        tr_batch, rot_axis=train_loader.dataset.gravity_axis)
             inputs = pocket_clouds.cuda(args.gpu, non_blocking=True)
-            lig_graphs = lig_graphs.cuda(args.gpu, non_blocking=True)
+            lig_graphs = lig_graphs.to("cuda")
             out = model(inputs, lig_graphs, optimizer, step, writer)
             entropy, prior_nats, recon_nats = out['entropy'], out['prior_nats'], out['recon_nats']
             entropy_avg_meter.update(entropy)

@@ -109,18 +109,20 @@ class GraphEncoder(nn.Module):
         super(GraphEncoder, self).__init__()
         self.use_deterministic_encoder = use_deterministic_encoder
         self.use_dist_in_layers = use_dist_in_layers
+        self.zdim = zdim
         self.num_layers = 1
         
         self.all_sigmas_dist = [1.5 ** x for x in range(10)]
         # Manually set the number of attention heads to 1
         self.num_att_heads = 1
         
-        self.lig_atom_embedding = AtomEncoder(emb_dim=embedding_dim, feature_dims = input_node_features_dim, use_scalar_feat=False, n_feats_to_use=None)
+        feature_dims = ([119, 4, 12, 12, 8, 10, 6, 6, 2, 8, 2, 2, 2, 2, 2, 2], 1)
+        self.lig_atom_embedding = AtomEncoder(emb_dim=embedding_dim, feature_dims = feature_dims, use_scalar_feat=False, n_feats_to_use=None)
         
         if self.use_dist_in_layers:
-            input_edge_features_dim4edge_mlp = input_edge_features_dim + 2 * input_node_features_dim + len(self.all_sigmas_dist)
+            input_edge_features_dim4edge_mlp = input_edge_features_dim + 2 * embedding_dim + 2 * 5 + len(self.all_sigmas_dist)
         else:
-            input_edge_features_dim4edge_mlp = input_edge_features_dim + 2 * input_node_features_dim
+            input_edge_features_dim4edge_mlp = input_edge_features_dim + 2 * embedding_dim + 2 * 5
             
         self.lig_edge_mlp = nn.Sequential(
                 nn.Linear(input_edge_features_dim4edge_mlp, hidden_dim),
@@ -132,7 +134,7 @@ class GraphEncoder(nn.Module):
             )
     
         self.node_mlp_lig = nn.Sequential(
-            nn.Linear(embedding_dim + hidden_dim, hidden_dim),
+            nn.Linear(embedding_dim + hidden_dim + 5, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
             nn.LeakyReLU(negative_slope=negative_slope),
             nn.Dropout(0.1),
@@ -143,13 +145,11 @@ class GraphEncoder(nn.Module):
         self.mu_layer = nn.Sequential(
             nn.Linear(hidden_dim * input_coords_dim, zdim),
             nn.BatchNorm1d(zdim),
-            nn.Relu(),
         )
         
         self.sigma_layer = nn.Sequential(
             nn.Linear(hidden_dim * input_coords_dim, zdim),
             nn.BatchNorm1d(zdim),
-            nn.Relu(),
         )
             
     def apply_edges_lig(self, edges):
@@ -183,9 +183,10 @@ class GraphEncoder(nn.Module):
         ligs_node_idx = torch.cumsum(lig_graph.batch_num_nodes(), dim=0).tolist()
         ligs_node_idx.insert(0, 0)
         
-        mu_batch = torch.zeros((len(ligs_node_idx) - 1, self.zdim), device = self.device)
-        sigma_batch = torch.zeros((len(ligs_node_idx) - 1, self.zdim), device = self.device)
+        mu_batch = torch.zeros((len(ligs_node_idx) - 1, self.zdim))
+        sigma_batch = torch.zeros((len(ligs_node_idx) - 1, self.zdim))
         
+        lig_info_batch = []
         for idx in range(len(ligs_node_idx) - 1):
             lig_start = ligs_node_idx[idx]
             lig_end = ligs_node_idx[idx + 1]
@@ -199,10 +200,13 @@ class GraphEncoder(nn.Module):
             
             #atention = (self.query_lig(lig_feats).view(-1, self.num_att_heads, -1).transpose(0, 1).transpose(1, 2) @ self.key_lig(lig_coords).view(-1, self.num_att_heads, -1).transpose(0, 1)) / np.sqrt(n)
             lig_info = lig_feats.transpose(0, 1) @ lig_coords
-            lig_info = torch.flatten(lig_info, start_dim=1)
+            lig_info = torch.flatten(lig_info)
+            lig_info_batch.append(lig_info)
+        
+        lig_info_batch = torch.stack(lig_info_batch)
             
-            mu_batch[idx] = self.mu_layer(lig_info)
-            sigma_batch[idx] = self.sigma_layer(lig_info)
+        mu_batch = F.relu(self.mu_layer(lig_info_batch))
+        sigma_batch = F.relu(self.sigma_layer(lig_info_batch))
 
         return mu_batch, sigma_batch
     
@@ -227,8 +231,7 @@ class PointFlow(nn.Module):
                                     input_edge_features_dim=args.input_edge_features_dim, 
                                     hidden_dim=args.hidden_dim,
                                     input_coords_dim=args.input_coords_dim,
-                                    use_dist_in_layers=args.use_dist_in_layers,
-                                    device=args.gpu)
+                                    use_dist_in_layers=args.use_dist_in_layers)
         
         self.point_cnf = get_point_cnf(args)
         self.latent_cnf = get_latent_cnf(args) if args.use_latent_flow else nn.Sequential()

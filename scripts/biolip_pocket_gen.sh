@@ -27,7 +27,9 @@ python train.py \
     --viz_freq 1 \
     --log_freq 1 \
     --val_freq 10 \
-    --distributed \
+    --input_node_features_dim 17 \
+    --input_edge_features_dim 15 \
+    --use_dist_in_layers \
     --use_latent_flow
 
 echo "Done"
